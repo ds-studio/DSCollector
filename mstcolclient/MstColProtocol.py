@@ -3,7 +3,7 @@ import os, sys
 import struct
 from twisted.internet.protocol import Protocol
 import logging
-import procontypes as pts
+import ConTypes.procontypes as pts
 
 
 class MstColProtocolException(Exception):
@@ -11,14 +11,18 @@ class MstColProtocolException(Exception):
 
 
 class MstColProtocol(Protocol):
-    bo = '<'
+    '''
 
+    '''
     def __init__(self):
         '''
         :return:
         '''
         self._buffer = b''
         self._hostmetrics = {}
+        self._epegmetrics = {}
+        self._mqnmetrics = {}
+        self._parse_status = 0
 
     def dataReceived(self, data):
         '''
@@ -29,7 +33,7 @@ class MstColProtocol(Protocol):
         self._buffer = self._buffer + data
         while True:
             if len(self._buffer) >= 4:
-                length, = struct.unpack(bo + "I", self._buffer[0, 4])
+                length, = struct.unpack("<I", self._buffer[0, 4])
                 if len(self._buffer) >= 4 + length:
                     self._parseBody(self._buffer[:length])
 
@@ -39,8 +43,6 @@ class MstColProtocol(Protocol):
             else:
                 break
 
-
-        handlePackageHeader(data)
         pass
 
     def dataSend(self):
@@ -94,8 +96,8 @@ class MstColProtocol(Protocol):
         :param host_buf:
         :return:
         '''
+        tmp_str = ''
 
-        hostbodyfmt = "<IIIQIIIIIIIIIIQII"
         host_dict = {}
         host_dict['id'] = struct.unpack("<I", host_buf[:4])
         filedlist = host_buf[4:].split(str='\0', num=9)
@@ -117,15 +119,16 @@ class MstColProtocol(Protocol):
             elif idx == 7:
                 host_dict['cpu_speed'] = tmp_str
             else:
-                break;
+
+                break
 
         (host_dict['cores_number'], host_dict['mem_total'], host_dict['swap_total'], host_dict['disk_total'],
          host_dict['cpu_idle_time'], host_dict['cpu_nice_time'], host_dict['cpu_sys_time'], host_dict['cpu_user_time'],
          host_dict['cpu_wio_time'], host_dict['mem_free'], host_dict['swap_free'], host_dict['mem_buffers'],
          host_dict['mem_cached'], host_dict['mem_shared'], host_dict['disk_free'], host_dict['timestamp'],
-         host_dict['utimestamp']) = struct.unpack(hostbodyfmt, tmp_str)
+         host_dict['utimestamp']) = struct.unpack("<IIIQIIIIIIIIIIQII", tmp_str)
 
-         self._hostmetrics = host_dict
+        self.self._hostmetrics = host_dict
 
     def _parseEpegBody(self, epeg_net_buf=None):
         '''
@@ -177,61 +180,36 @@ class MstColProtocol(Protocol):
 
         p_num = int(p_num) - 1
 
+        self._epegmetrics = epeg_dict
 
 
 
-
-    def _parseMqnBody(self):
+    def _parseMqnBody(self, mqn_net_buf):
         '''
         :param self:
         :return:
         '''
-        epeg_dict = {}
-        if epeg_net_buf == None or len(epeg_net_buf) <= 0:
-            logging.error("epeg buf is None! ", sys._getframe().f_code.co_name)
+        mqn_dict = {}
+        if mqn_net_buf == None or len(mqn_net_buf) <= 0:
+            logging.error("mqn buf is None! ", sys._getframe().f_code.co_name)
             raise MstColProtocolException, pts.PROTO_RESP_SUCCSS
 
-        (epeg_dict['node_id'], epeg_dict['proc_total'], epeg_dict['proc_active'], epeg_dict['timestamp'],
-         epeg_dict['utimestamp']) = struct.unpack("<IIIII", epeg_net_buf[:struct.calcsize("IIII")])
+        (mqn_dict['node_id'], mqn_dict['queue_total'], mqn_dict['queue_active'], mqn_dict['memcache_size'],
+         mqn_dict['memcache_used'], mqn_dict['retrans_count'], mqn_dict['timestamp'],
+         mqn_dict['utimestamp']) = struct.unpack("<IIIIIIIII", mqn_net_buf[:struct.calcsize("IIIIIIII")])
 
-        p_num = epeg_dict['proc_active']
-        p_len = struct.calcsize("IIII")
+        q_num = mqn_dict['queue_active']
+        q_len = struct.calcsize("IIII")
 
-        while p_num > 0:
-            p_dict = {}
-            filedlist = epeg_net_buf[:].split(str='\0', num=3)
-            for idx, tmp_str in enumerate(filedlist):
-                if idx == 0:
-                    p_dict['p_name'] = tmp_str
-                elif idx == 1:
-                    p_dict['job_name'] = tmp_str
-                else:
-                    pass
+        queue_str = mqn_net_buf[struct.calcsize('IIIIIIII'):]
+        while q_num > 0:
+            q_dict = {}
+            q_dict['queue_name'], queue_str = queue_str.split(str='\0', num=2)
+            q_dict['queue_store'], queue_str = struct.unpack("<Q", queue_str[:struct.calcsize('Q')])
+            mqn_dict[q_dict['queue_name']] = q_dict
+            q_num = int(q_num) - 1
 
-            (p_dict['idx'], p_dict['extern_idx'], p_dict['proc_status'],
-             p_dict['proc_pid'], tmp_str) = struct.unpack("<BBBH%ds"%len(tmp_str)-struct.calcsize("BBBH"), tmp_str)
-
-            p_dict['proc_version'], tmp_buf = tmp_str.split('\0', 2)
-
-            (p_dict['proc_starttime'], p_dict['cpu'], p_dict['memory'], p_dict['flow_counts'], p_dict['status'],
-             tmp_str) = struct.unpack("<IIIII%ds"%len(tmp_str)-struct.calcsize("IIIII"), tmp_str)
-
-            q_num = p_dict['flow_counts']
-
-            while q_num > 0:
-                q_dict = {}
-                q_dict['queue_name'], tmp_str = tmp_str.split('\0', 2)
-                (q_dict['direction'], q_dict['emsgs'], q_dict['bytes']) = struct.unpack("<BQQ",
-                                                                            tmp_str[:struct.calcsize("BQQ")])
-                p_dict[q_dict['queue_name']] = q_dict
-                q_num = int(q_num) - 1
-
-
-            epeg_dict[p_dict['p_name']] = p_dict
-
-        p_num = int(p_num) - 1
-        pass
-
+        self._mqnmetrics = mqn_dict
 
 
 
