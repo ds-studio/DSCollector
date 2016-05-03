@@ -2,8 +2,10 @@
 import os, sys
 import struct
 from twisted.internet.protocol import Protocol
+from twisted.internet.protocol import ClientFactory
 import logging
 import ConTypes.procontypes as pts
+
 
 
 class MstColProtocolException(Exception):
@@ -12,7 +14,7 @@ class MstColProtocolException(Exception):
 
 class MstColProtocol(Protocol):
     '''
-
+        基于Twisted protocol的采集协议库封装
     '''
     def __init__(self):
         '''
@@ -22,10 +24,12 @@ class MstColProtocol(Protocol):
         self._hostmetrics = {}
         self._epegmetrics = {}
         self._mqnmetrics = {}
-        self._parse_status = 0
+        self._status = 0
 
     def dataReceived(self, data):
         '''
+        :func descript:
+            IN_EVENT read data from socket
         :param data:
         :return:
         '''
@@ -36,8 +40,6 @@ class MstColProtocol(Protocol):
                 length, = struct.unpack("<I", self._buffer[0, 4])
                 if len(self._buffer) >= 4 + length:
                     self._parseBody(self._buffer[:length])
-
-
                 else:
                     break
             else:
@@ -49,47 +51,47 @@ class MstColProtocol(Protocol):
         pass
 
     def connectionMade(self):
-        pass
-
-    def makeConnection(self, transport):
-        pass
+        self._sendLoginRsq()
 
     def connectionLost(self):
         pass
 
 
-    def _buildHeader(self):
-        pass
+    def _sendLoginRsq(self):
 
-    def _buildHostBody(self):
-        pass
+        log_buf = struct.pack("<III%ds16s" % len(self.transport.ip), len, pts.PROTO_NET_LOGIN,
+                              0, self.transport.ip, '')
+        return log_buf
 
-    def _buildEpegBody(self):
-        pass
+    def _sendCollectRsq(self, cmd, seq):
+        if seq <= 0:
+            return
 
-    def _buildMqnBody(self):
-        pass
+        log_buf = struct.pack("<III" % pts.PROTO_CON_LEN_HEAD, cmd, seq)
+
+        return log_buf
+
 
 
     def _parseBody(self, hd):
         pk_len, pk_cmd, pk_seq = struct.unpack("<III", hd[:12])
         if not pk_cmd in pts:
             logging.error("cmd(%d) is unknow ", pk_cmd)
-            return None
+            return
 
         if pk_cmd == pts.PROTO_NET_LOGIN_RESP:
-            self.resp_rt = self._parseResp(hd[12: 16])
-            return self.resp_rt
+            self._parseResp(hd[12: 16])
+
         elif pk_cmd == pts.PROTO_NET_ACTIVE_RES:
-            pass
+            self._parseResp(hd[12: 16])
+
         elif pk_cmd == pts.PROTO_NET_IHOSTMETRICS_RESP:
             self._parseHostBody(hd[12: pk_len])
         else:
             pass
 
     def _parseResp(self, hd):
-        resp_rt = struct.unpack("<I", hd)
-        pass
+        self._parsestatus = struct.unpack("<I", hd)
 
     def _parseHostBody(self, host_buf):
         '''
@@ -213,3 +215,22 @@ class MstColProtocol(Protocol):
 
 
 
+class DsColFactory(ClientFactory):
+    protocol = MstColProtocol
+
+    def __init__(self, deferred, cl_server):
+        self.server = cl_server
+        self.linkpool = None
+        self.deferred = deferred
+        self.link_num = 1
+
+    def handlePoem(self, poem):
+        d, self.deferred = self.deferred, None
+        d.callback(poem)
+
+    def clientConnectionLost(self, _, reason):
+        if self.deferred is not None:
+            d, self.deferred = self.deferred, None
+            d.errback(reason)
+
+    clientConnectionFailed = clientConnectionLost
